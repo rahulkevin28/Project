@@ -551,12 +551,17 @@ function updateRunPreview() {
     legend.textContent = "";
   } else {
     description.textContent = `${workflow.description} · up to ${plural(workflow.max_handoffs, "handoff")} per run`;
-    const run = activeRun();
+    // While a run is in progress its path isn't known yet, so don't show the previous run's.
+    const run = state.running ? null : activeRun();
     const path = run?.response && run.workflow === workflow.name ? runPath(run.response) : {};
     $("#run-graph").replaceChildren(renderGraph(workflow, path));
-    legend.textContent = path.visited
-      ? "Highlighted: the agents and handoffs this run used"
-      : "Arrows are the handoffs each agent may make";
+    if (state.running && state.running.workflow === workflow.name) {
+      legend.textContent = "Running: this run's path is highlighted when it finishes";
+    } else {
+      legend.textContent = path.visited
+        ? "Highlighted: the agents and handoffs this run used"
+        : "Arrows are the handoffs each agent may make";
+    }
   }
   setRunButton();
 }
@@ -792,7 +797,7 @@ async function runWorkflow(event) {
   }
   const run = { id: newId(), workflow: workflow.name, prompt, startedAt: Date.now() };
   state.running = { workflow: workflow.name, startedAt: run.startedAt };
-  setRunButton();
+  updateRunPreview();
   renderRunResult();
   if (window.matchMedia("(max-width: 920px)").matches) {
     $("#run-result").scrollIntoView({ behavior: "smooth", block: "start" });
