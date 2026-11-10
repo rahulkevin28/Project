@@ -19,10 +19,10 @@ class Settings(BaseSettings):
     google_api_key: str | None = None
     # Shared secret the platform backend sends as "Authorization: Bearer <token>".
     engine_api_token: str | None = None
-    model_timeout_seconds: float = Field(default=60.0, gt=0)
+    model_timeout_seconds: float = Field(default=300.0, gt=0)
     model_max_retries: int = Field(default=2, ge=0, le=10)
     tool_timeout_seconds: float = Field(default=30.0, gt=0)
-    run_timeout_seconds: float = Field(default=300.0, gt=0)
+    run_timeout_seconds: float = Field(default=900.0, gt=0)
     # Optional cost estimates, as JSON: {"model-id": {"input_per_million": 1.0, ...}}.
     model_prices: dict[str, ModelPrice] = Field(default_factory=dict)
 

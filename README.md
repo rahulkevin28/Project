@@ -91,7 +91,7 @@ Each `history` entry has `agent`, `status` (`completed`, `failed`, or `cancelled
 
 ### Failures, retries, and error codes
 
-Model calls time out after `MODEL_TIMEOUT_SECONDS` and the whole run after `RUN_TIMEOUT_SECONDS`. Timeouts, rate limits, and provider outages are retried up to `MODEL_MAX_RETRIES` times with exponential backoff, and every retry is counted in `usage.retries`. Bad keys and rejected requests are not retried. When a tool fails or times out, the error goes back to the agent as a tool message so it can recover; the run doesn't fail.
+Model calls time out after `MODEL_TIMEOUT_SECONDS` (5 minutes by default) and the whole run after `RUN_TIMEOUT_SECONDS` (15 minutes). The limits are generous because thinking models can be slow: in testing, a single `gemini-3.8-flash` call took 40 to 100 seconds, and the default workflow makes one call per agent step. Timeouts, rate limits, and provider outages are retried up to `MODEL_MAX_RETRIES` times with exponential backoff, and every retry is counted in `usage.retries`. Bad keys and rejected requests are not retried. When a tool fails or times out, the error goes back to the agent as a tool message so it can recover; the run doesn't fail.
 
 A failed run still returns its full run record, plus a `detail` message, with this HTTP status:
 
@@ -163,10 +163,10 @@ All settings are environment variables (or lines in `.env` for local development
 | `LLM_TEMPERATURE` | `0` | Sampling temperature. |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` | — | Key for the selected provider. |
 | `ENGINE_API_TOKEN` | — | Shared secret required on API calls when set. |
-| `MODEL_TIMEOUT_SECONDS` | `60` | Limit for each model call. |
+| `MODEL_TIMEOUT_SECONDS` | `300` | Limit for each model call. |
 | `MODEL_MAX_RETRIES` | `2` | Retries for retryable model errors. |
 | `TOOL_TIMEOUT_SECONDS` | `30` | Limit for each tool call. |
-| `RUN_TIMEOUT_SECONDS` | `300` | Limit for a whole run. |
+| `RUN_TIMEOUT_SECONDS` | `900` | Limit for a whole run. |
 | `MODEL_PRICES` | — | JSON map of model ID to `input_per_million` and `output_per_million` prices in USD, for cost estimates. |
 | `LOG_LEVEL` | `INFO` | Log level. |
 

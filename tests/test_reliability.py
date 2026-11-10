@@ -234,6 +234,28 @@ def test_errors_are_classified_into_stable_codes(error, code, retryable):
     assert classified.agent == "writer"
 
 
+def test_default_limits_leave_room_for_slow_thinking_models():
+    from engine.config import Settings
+
+    settings = Settings(_env_file=None)
+    policy = settings.execution_policy()
+
+    assert policy == ExecutionPolicy()
+    assert policy.model_timeout_seconds == 300
+    assert policy.run_timeout_seconds == 900
+    assert policy.run_timeout_seconds >= 3 * policy.model_timeout_seconds
+
+
+def test_google_overload_errors_are_retried():
+    class GoogleAPIError(Exception):
+        code = 503
+
+    error = classify_error(GoogleAPIError("The model is overloaded."))
+
+    assert error.code == "model_unavailable"
+    assert error.retryable is True
+
+
 def test_classification_keeps_engine_errors_and_redacts_messages():
     original = EngineError("agent_tool_limit", "Used all tool rounds")
     assert classify_error(original) is original

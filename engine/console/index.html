@@ -57,9 +57,10 @@
             <textarea id="run-prompt" rows="7" maxlength="20000"
               placeholder="Describe the task. Paste any policy or source text the agents should rely on."></textarea>
             <div class="examples">
-              <span class="hint">Try an example:</span>
-              <button type="button" class="chip" data-example="returns">Return policy question</button>
-              <button type="button" class="chip" data-example="email">Support hours email</button>
+              <label for="run-example" class="hint">Try an example:</label>
+              <select id="run-example" class="example-select">
+                <option value="">Choose one of 10 examples…</option>
+              </select>
             </div>
           </div>
           <button type="submit" id="run-button" class="btn btn-primary btn-block btn-lg">Run workflow</button>

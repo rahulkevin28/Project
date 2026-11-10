@@ -6,10 +6,60 @@ const AGENT_PROMPT_LIMIT = 12000;
 const NAME_PATTERN = /^[a-z][a-z0-9_-]{1,63}$/;
 const NAME_RULE = "Use 2–64 characters: a lowercase letter first, then lowercase letters, numbers, - or _.";
 const VIEWS = ["run", "workflows", "agents"];
-const EXAMPLES = {
-  returns: "A customer asks whether they can return a product. The policy allows returns within 30 days of purchase.",
-  email: "Write a short, friendly email telling customers that support hours change to 9am–5pm, Monday to Friday, from 1 December.",
-};
+// Prompts for the "Try an example" menu. The policy questions check that agents use only the
+// facts supplied and say when something isn't stated.
+const EXAMPLES = [
+  {
+    group: "Policy questions (checks agents don't invent details)",
+    label: "Return within 30 days",
+    prompt: "A customer asks whether they can return a product. The policy allows returns within 30 days of purchase.",
+  },
+  {
+    group: "Policy questions (checks agents don't invent details)",
+    label: "Refund on an opened item",
+    prompt: "A customer opened a pair of headphones 10 days ago and wants a full refund. Our policy says: unopened items can be returned within 30 days for a full refund. What should we tell them?",
+  },
+  {
+    group: "Policy questions (checks agents don't invent details)",
+    label: "Late delivery compensation",
+    prompt: "A customer's order arrived 5 working days after they placed it, and they want compensation. Our shipping policy says: standard delivery takes 3–5 working days, and we refund the shipping fee if an order takes more than 7 working days. What can we offer?",
+  },
+  {
+    group: "Policy questions (checks agents don't invent details)",
+    label: "Warranty after 14 months",
+    prompt: "A customer's laptop stopped charging 14 months after purchase. Our warranty covers parts and labour for 12 months from the date of purchase. Is the repair covered?",
+  },
+  {
+    group: "Policy questions (checks agents don't invent details)",
+    label: "Question with no policy given",
+    prompt: "A customer wants to cancel their annual subscription halfway through the year and asks if they will get money back. We haven't shared our cancellation policy with you. How should we reply?",
+  },
+  {
+    group: "Writing",
+    label: "Support hours email",
+    prompt: "Write a short, friendly email telling customers that support hours change to 9am–5pm, Monday to Friday, from 1 December.",
+  },
+  {
+    group: "Writing",
+    label: "Outage apology",
+    prompt: "Write a short apology to customers for a two-hour website outage on 3 November. Orders placed during the outage were not lost. Do not promise any compensation.",
+  },
+  {
+    group: "Writing",
+    label: "Feature announcement",
+    prompt: "Write a three-sentence announcement that our mobile app now supports dark mode and lets people view saved lists offline.",
+  },
+  {
+    group: "Summaries and decisions",
+    label: "Summarise customer reviews",
+    prompt: "Summarise these customer reviews into the top three themes, with one short quote for each:\n1. \"Delivery was fast, but the box was damaged.\"\n2. \"Great quality, slow delivery.\"\n3. \"Customer service fixed my issue in minutes.\"\n4. \"It arrived late and the box was crushed.\"\n5. \"Support were friendly and quick.\"",
+  },
+  {
+    group: "Summaries and decisions",
+    label: "Recommend a plan",
+    prompt: "A customer asks which plan to choose. Basic costs £5 a month for 1 user with email support. Team costs £20 a month for up to 10 users with chat support. They have 4 users and want faster support. Recommend a plan using only these details.",
+  },
+];
 
 const TOKEN_KEY = "ai-workflow-engine-token";
 
@@ -335,7 +385,11 @@ function renderGraph(workflow, { visited = [], taken = [], pending = null } = {}
   const GAP_X = 44;
   const GAP_Y = 18;
   const PAD = 6;
-  const ARC = 34;
+  // Handoffs that skip a column (or loop back) run as rounded brackets above (or below) the
+  // boxes, so each arrowhead lands squarely on its target. Each one gets its own lane.
+  const LANE_START = 24;
+  const LANE_GAP = 12;
+  const CORNER = 8;
 
   const columns = [];
   for (const node of layout.nodes) (columns[layout.depth.get(node)] ||= []).push(node);
@@ -354,11 +408,17 @@ function renderGraph(workflow, { visited = [], taken = [], pending = null } = {}
     if (to === from + 1) return "forward";
     return to > from ? "skip" : "back";
   };
-  const hasSkip = edges.some((edge) => kindOf(edge) === "skip");
-  const hasBack = edges.some((edge) => kindOf(edge) === "back");
-  const top = PAD + (hasSkip ? ARC : 0);
+  const span = (edge) => Math.abs(layout.depth.get(edge.target) - layout.depth.get(edge.source));
+  const lanes = new Map();
+  const laneSpace = (kind) => {
+    const routed = edges.filter((edge) => kindOf(edge) === kind).sort((a, b) => span(a) - span(b));
+    routed.forEach((edge, index) => lanes.set(`${edge.source}>${edge.target}`, index));
+    return routed.length ? LANE_START + (routed.length - 1) * LANE_GAP + 4 : 0;
+  };
+  const top = PAD + laneSpace("skip");
+  const bottomSpace = laneSpace("back");
   const width = PAD * 2 + columns.length * W + (columns.length - 1) * GAP_X;
-  const height = top + bodyHeight + PAD + (hasBack ? ARC : 0);
+  const height = top + bodyHeight + PAD + bottomSpace;
 
   const position = new Map();
   columns.forEach((column, columnIndex) => {
@@ -372,7 +432,8 @@ function renderGraph(workflow, { visited = [], taken = [], pending = null } = {}
   const takenKeys = new Set(taken);
   const visitedNodes = new Set(visited);
   const marker = (variant) => svgEl("marker", {
-    id: `${id}-${variant}`, viewBox: "0 0 10 10", refX: 9.5, refY: 5,
+    // refX below 10 tucks the tip slightly into the box border so it reads as attached.
+    id: `${id}-${variant}`, viewBox: "0 0 10 10", refX: 8, refY: 5,
     markerWidth: 9, markerHeight: 9, markerUnits: "userSpaceOnUse", orient: "auto",
   }, svgEl("path", { d: "M0,0 L10,5 L0,10 z", class: `arrow ${variant}` }));
 
@@ -387,14 +448,22 @@ function renderGraph(workflow, { visited = [], taken = [], pending = null } = {}
       const y2 = b.y + H / 2;
       return `M${x1},${y1} C${x1 + GAP_X / 2},${y1} ${x2 - GAP_X / 2},${y2} ${x2},${y2}`;
     }
+    const lane = lanes.get(`${edge.source}>${edge.target}`) ?? 0;
+    const offset = LANE_START + lane * LANE_GAP;
     if (kind === "skip") {
-      const x1 = a.x + W * 0.62;
-      const x2 = b.x + W * 0.38;
-      return `M${x1},${a.y} C${x1},${a.y - ARC} ${x2},${b.y - ARC} ${x2},${b.y}`;
+      // Up from the source, across, then straight down onto the target's top edge.
+      const x1 = a.x + W / 2;
+      const x2 = b.x + W / 2;
+      const y = Math.min(a.y, b.y) - offset;
+      return `M${x1},${a.y} V${y + CORNER} Q${x1},${y} ${x1 + CORNER},${y} `
+        + `H${x2 - CORNER} Q${x2},${y} ${x2},${y + CORNER} V${b.y}`;
     }
-    const x1 = a.x + W * 0.38;
-    const x2 = b.x + W * 0.62;
-    return `M${x1},${a.y + H} C${x1},${a.y + H + ARC} ${x2},${b.y + H + ARC} ${x2},${b.y + H}`;
+    // Loop back: down from the source, across below the boxes, then up into the target.
+    const x1 = a.x + W / 2;
+    const x2 = b.x + W / 2;
+    const y = Math.max(a.y, b.y) + H + offset;
+    return `M${x1},${a.y + H} V${y - CORNER} Q${x1},${y} ${x1 - CORNER},${y} `
+      + `H${x2 + CORNER} Q${x2},${y} ${x2},${y - CORNER} V${b.y + H}`;
   };
 
   const edgeVariant = (edge) => {
@@ -1210,13 +1279,24 @@ function init() {
   prompt.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) runWorkflow(event);
   });
-  for (const chip of $$("[data-example]")) {
-    chip.addEventListener("click", () => {
-      prompt.value = EXAMPLES[chip.dataset.example];
-      updatePromptCount();
-      prompt.focus();
-    });
-  }
+  const exampleMenu = $("#run-example");
+  const groups = new Map();
+  EXAMPLES.forEach((example, index) => {
+    if (!groups.has(example.group)) {
+      groups.set(example.group, el("optgroup", { label: example.group }));
+      exampleMenu.append(groups.get(example.group));
+    }
+    groups.get(example.group).append(el("option", { value: String(index), text: example.label }));
+  });
+  exampleMenu.firstElementChild.textContent = `Choose one of ${EXAMPLES.length} examples…`;
+  exampleMenu.addEventListener("change", () => {
+    const example = EXAMPLES[Number(exampleMenu.value)];
+    exampleMenu.value = "";
+    if (!example) return;
+    prompt.value = example.prompt;
+    updatePromptCount();
+    prompt.focus();
+  });
 
   $("#new-workflow").addEventListener("click", () => openWorkflowEditor());
   $("#workflow-form").addEventListener("submit", saveWorkflow);

@@ -37,13 +37,17 @@ def redact(value: object, limit: int = 1000) -> str:
 
 @dataclass(frozen=True)
 class ExecutionPolicy:
-    """Limits applied to every run. All values are seconds except the retry count."""
+    """Limits applied to every run. All values are seconds except the retry count.
 
-    model_timeout_seconds: float = 60.0
+    Thinking models such as Gemini can take well over a minute per call, and a run makes
+    one call per agent step, so the defaults allow 5 minutes per call and 15 per run.
+    """
+
+    model_timeout_seconds: float = 300.0
     model_max_retries: int = 2
     retry_backoff_seconds: float = 1.0
     tool_timeout_seconds: float = 30.0
-    run_timeout_seconds: float = 300.0
+    run_timeout_seconds: float = 900.0
 
 
 class ModelPrice(BaseModel):
