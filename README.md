@@ -32,13 +32,13 @@ Then open <http://127.0.0.1:8765/> for the console, or <http://127.0.0.1:8765/do
 
 The root URL redirects to `/console/`, a browser console served by this service. It is plain HTML, CSS, and JavaScript in `engine/console/`, with no build step or Node dependency, and it calls only this service's own JSON API.
 
-- **Run**: pick a workflow, write a prompt (or start from an example), and press **Run workflow** or `Cmd`/`Ctrl` + `Enter`. The result shows the status, the answer, each agent's step with its handoff notes, and the path taken through the workflow graph. Recent runs stay in the browser tab only and are not saved.
+- **Run**: pick a workflow, write a prompt (or pick one of 10 examples), and press **Run workflow** or `Cmd`/`Ctrl` + `Enter`. While the run is in progress, the workflow graph lights up live: agents that have finished are highlighted, the agent working now pulses, and each step appears as soon as it finishes. The result shows the status, the answer, each agent's step with its handoff notes, and the path taken through the workflow graph. Recent runs stay in the browser tab only and are not saved.
 - **Workflows**: view each workflow as a graph, then create, edit, delete, or run it. The editor previews the graph as you add handoffs and flags self-handoffs, duplicates, and agents that can't be reached.
 - **Agents**: create, edit, and delete agents, approve registered tools, and see which workflows use each agent. The editor shows the grounding rules that are always added to an agent's instructions.
 
 The header shows whether the engine is online and which provider and model are configured. `GET /info` supplies that, and it never includes API keys. Each run shows its time, tokens, estimated cost, and retries, and each step shows its own figures and any tool calls. Failed runs show the error code, a hint, and a **Try again** button when the error is safe to retry. If the engine has a token set, the console asks for it once and keeps it in that browser tab only.
 
-The console is a development and operations tool for this module; the platform's main frontend can call the same API. The API exposes `/health`, `/info`, `/agents`, `/tools`, `/workflows`, `POST /workflows/{workflow_name}/execute` with `{"prompt":"..."}`, and `POST /runs`. All routes are listed in `/docs`. Registry changes live in memory and disappear when the process restarts; see [Platform integration](#platform-integration) for how the backend can own storage instead. User accounts, permissions, and rate limits belong in the platform backend.
+The console is a development and operations tool for this module; the platform's main frontend can call the same API. The API exposes `/health`, `/info`, `/agents`, `/tools`, `/workflows`, `POST /workflows/{workflow_name}/execute` with `{"prompt":"..."}`, `POST /runs`, and streaming versions of both run routes (see [Live progress](#live-progress)). All routes are listed in `/docs`. Registry changes live in memory and disappear when the process restarts; see [Platform integration](#platform-integration) for how the backend can own storage instead. User accounts, permissions, and rate limits belong in the platform backend.
 
 ## Add an agent, tool, or workflow
 
@@ -108,6 +108,21 @@ A failed run still returns its full run record, plus a `detail` message, with th
 | `internal_error` | 500 | No | A bug in the engine; check the server log. |
 
 Every run writes one log line with its `run_id`, status, tokens, and duration, so platform logs can be matched to run records. Error messages are redacted before they are logged or returned.
+
+## Live progress
+
+`POST /workflows/{workflow_name}/execute/stream` and `POST /runs/stream` take the same request bodies as their non-streaming versions, but respond with [server-sent events](https://developer.mozilla.org/docs/Web/API/Server-sent_events) as the run happens. A frontend can use them to show which agent is working right now.
+
+| Event | When | Data |
+|---|---|---|
+| `run_started` | Before the first agent runs | `run_id`, `workflow`, `model`, `started_at` |
+| `step_started` | An agent starts working | `run_id`, `index`, `agent`, `started_at` |
+| `step_finished` | An agent finishes or fails | `run_id`, `index`, `step` (the same object as a `history` entry) |
+| `run_finished` | The run is over | `run_id`, `run` (the full run record) |
+
+Each event is sent as `event: <type>` followed by `data: <json>`. A `: keep-alive` comment line is sent every 15 seconds during long model calls, so proxies don't close the connection; clients should ignore it. The stream itself always returns HTTP 200: a failed run ends with a `run_finished` event whose record has `status: "failed"` and an `error`. Problems found before the run starts, such as an unknown workflow (404), invalid definitions (422), or a missing token (401), return a normal JSON error instead of a stream. If the client disconnects, the run is cancelled so it stops using the model.
+
+Browsers' built-in `EventSource` only sends GET requests without custom headers, so use `fetch` and read the response body as a stream (the console's `streamRun` in `engine/console/app.js` is a working example).
 
 ## Platform integration
 
@@ -181,4 +196,4 @@ python -m pytest
 ruff check engine tests
 ```
 
-The tests use scripted fake models, so they make no external model calls and need no API keys. They cover handoff routing and inputs, grounding rules, tool approval, handoff limits, retries, timeouts, error codes, tool failures, usage and cost recording, the service token, `POST /runs`, provider configuration, credential redaction, the management API, and serving the console.
+The tests use scripted fake models, so they make no external model calls and need no API keys. They cover handoff routing and inputs, grounding rules, tool approval, handoff limits, retries, timeouts, error codes, tool failures, usage and cost recording, live progress events and streaming, the service token, `POST /runs`, provider configuration, credential redaction, the management API, and serving the console.

@@ -234,6 +234,64 @@ def test_errors_are_classified_into_stable_codes(error, code, retryable):
     assert classified.agent == "writer"
 
 
+@pytest.mark.asyncio
+async def test_runs_report_live_progress_events_in_order():
+    events = []
+    model = SequenceModel(
+        reply(tool_calls=[call("handoff_to_agent", {"target_agent": "writer", "context": "Write it."})]),
+        reply("Final", 5, 5),
+    )
+
+    result = await executor_for(model, agents=("planner", "writer"),
+                                edges=(("planner", "writer"),)).execute(
+        "demo", "Hi", listener=events.append)
+
+    assert [event["type"] for event in events] == [
+        "run_started", "step_started", "step_finished", "step_started", "step_finished",
+        "run_finished",
+    ]
+    assert {event["run_id"] for event in events} == {result["run_id"]}
+    assert [event["agent"] for event in events if event["type"] == "step_started"] == [
+        "planner", "writer"]
+    assert [event["index"] for event in events if event["type"] == "step_finished"] == [0, 1]
+    assert events[2]["step"]["handoff_to"] == "writer"
+    assert events[4]["step"]["usage"]["total_tokens"] == 10
+    assert events[-1]["run"] == result
+
+
+@pytest.mark.asyncio
+async def test_failed_steps_are_reported_before_the_run_finishes():
+    events = []
+
+    await executor_for(SequenceModel(ProviderError(401))).execute(
+        "demo", "Hi", listener=events.append)
+
+    assert [event["type"] for event in events] == [
+        "run_started", "step_started", "step_finished", "run_finished"]
+    assert events[2]["step"]["status"] == "failed"
+    assert events[-1]["run"]["error"]["code"] == "model_auth_failed"
+
+
+@pytest.mark.asyncio
+async def test_async_listeners_are_awaited_and_broken_ones_do_not_break_the_run():
+    seen = []
+
+    async def async_listener(event):
+        await asyncio.sleep(0)
+        seen.append(event["type"])
+
+    def broken_listener(event):
+        raise RuntimeError("listener bug")
+
+    first = await executor_for(SequenceModel(reply("Done"))).execute(
+        "demo", "Hi", listener=async_listener)
+    second = await executor_for(SequenceModel(reply("Done"))).execute(
+        "demo", "Hi", listener=broken_listener)
+
+    assert seen[0] == "run_started" and seen[-1] == "run_finished"
+    assert first["status"] == second["status"] == "completed"
+
+
 def test_default_limits_leave_room_for_slow_thinking_models():
     from engine.config import Settings
 

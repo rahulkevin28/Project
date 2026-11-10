@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
@@ -115,6 +117,61 @@ def test_runs_endpoint_rejects_incomplete_definitions(change, message):
 
     assert response.status_code == 422
     assert message in str(response.json()["detail"])
+
+
+def parse_events(body):
+    """Read server-sent events, skipping keep-alive comments."""
+    events = []
+    for frame in body.split("\n\n"):
+        data = [line[5:].strip() for line in frame.splitlines() if line.startswith("data:")]
+        if data:
+            events.append(json.loads("\n".join(data)))
+    return events
+
+
+def test_streaming_run_sends_progress_events_then_the_final_record():
+    with make_client(model=AnswerModel()) as client:
+        client.post("/workflows", json={"name": "solo", "description": "One agent",
+                                        "entry_agent": "writer"})
+        response = client.post("/workflows/solo/execute/stream", json={"prompt": "Hi"})
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: step_started" in response.text
+    events = parse_events(response.text)
+    assert [event["type"] for event in events] == [
+        "run_started", "step_started", "step_finished", "run_finished"]
+    assert events[1]["agent"] == "writer"
+    assert events[-1]["run"]["status"] == "completed"
+    assert events[-1]["run"]["result"] == "Answer to: Hi"
+
+
+def test_streaming_routes_check_the_token_and_request_before_streaming():
+    auth = {"Authorization": f"Bearer {TEST_TOKEN}"}
+    bad_tools = {**INLINE_RUN, "agents": [{**INLINE_RUN["agents"][0], "tool_names": ["missing"]}]}
+    with make_client(model=AnswerModel(), api_token=TEST_TOKEN) as client:
+        no_token = client.post("/runs/stream", json=INLINE_RUN)
+        missing = client.post("/workflows/missing/execute/stream", json={"prompt": "Hi"},
+                              headers=auth)
+        rejected = client.post("/runs/stream", json=bad_tools, headers=auth)
+        inline = client.post("/runs/stream", json=INLINE_RUN, headers=auth)
+
+    assert no_token.status_code == 401
+    assert missing.status_code == 404
+    assert rejected.status_code == 422
+    assert inline.status_code == 200
+    assert parse_events(inline.text)[-1]["run"]["workflow"] == "support"
+
+
+def test_streamed_failures_end_with_the_failed_run_record():
+    with make_client(model=AnswerModel(error=AuthError("Invalid API key"))) as client:
+        response = client.post("/runs/stream", json=INLINE_RUN)
+
+    events = parse_events(response.text)
+    assert response.status_code == 200
+    assert events[-2]["type"] == "step_finished"
+    assert events[-2]["step"]["status"] == "failed"
+    assert events[-1]["run"]["error"]["code"] == "model_auth_failed"
 
 
 def test_failed_runs_return_the_run_record_with_a_matching_status_code():

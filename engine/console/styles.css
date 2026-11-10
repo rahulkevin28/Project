@@ -262,8 +262,13 @@ input:disabled { background: var(--surface-2); color: var(--muted); }
 .prose h3, .prose h4, .prose h5, .prose h6 { font-size: 15px; margin: 0.9em 0 0.4em; }
 .prose > h3:first-child, .prose > h4:first-child, .prose > h5:first-child { margin-top: 0; }
 .prompt-details { margin-top: 12px; }
-.loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; min-height: 300px; text-align: center; }
-.loading .elapsed { font-variant-numeric: tabular-nums; color: var(--muted); }
+.live-head { display: flex; align-items: center; gap: 10px; font-size: 15px; color: var(--accent); }
+.live-head strong { color: var(--text); font-weight: 650; }
+.live-head .elapsed { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
+.live-note { margin: 6px 0 2px; font-size: 13.5px; }
+.step-working .step-marker { background: var(--accent-soft); color: var(--accent); }
+.step-working .step-marker .spinner { width: 14px; height: 14px; }
+.step-working .step-meta { color: var(--accent); }
 
 .timeline { list-style: none; margin: 0; padding: 0; }
 .step { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 12px; position: relative; padding-bottom: 18px; }
@@ -336,10 +341,19 @@ details.notes > .prose, details.notes > pre { padding: 0 12px 12px; margin: 0; f
 .graph { display: block; max-width: 100%; height: auto; flex: none; }
 .graph .node rect { fill: var(--surface); stroke: var(--border-strong); stroke-width: 1.5; }
 .graph .node text { fill: var(--text); font: 600 13px var(--font); }
-.graph .node .start-dot { fill: var(--accent); }
+/* Marks where the run is; a thin ring keeps it visible on highlighted boxes. */
+.graph .run-dot { fill: var(--accent); stroke: var(--surface); stroke-width: 1.5; }
+.graph .run-dot.live { filter: drop-shadow(0 0 4px color-mix(in srgb, var(--accent) 75%, transparent)); }
 .graph .node.entry rect { stroke: var(--accent); }
 .graph .node.visited rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
 .graph .node.unreachable rect { stroke: var(--warn); stroke-dasharray: 4 3; }
+/* The agent working right now in a live run: a stronger fill and a pulsing outline. */
+.graph .node.working rect {
+  fill: color-mix(in srgb, var(--accent) 22%, var(--surface)); stroke: var(--accent); stroke-width: 2.5;
+  animation: node-working 1.4s ease-in-out infinite;
+}
+.graph .node.working { filter: drop-shadow(0 0 6px color-mix(in srgb, var(--accent) 55%, transparent)); }
+@keyframes node-working { 0%, 100% { stroke-opacity: 1; } 50% { stroke-opacity: 0.3; } }
 .graph .edge { fill: none; stroke: var(--edge); stroke-width: 1.6; }
 .graph .edge.active { stroke: var(--accent); stroke-width: 2.4; }
 .graph .edge.pending { stroke: var(--warn); stroke-width: 2; stroke-dasharray: 5 4; }

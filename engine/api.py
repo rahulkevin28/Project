@@ -1,17 +1,20 @@
 """FastAPI application factory for embedding the execution engine."""
 
+import asyncio
+import json
 import secrets
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Security, status
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, model_validator
 
 from .agents import GROUNDING_RULES, AgentDefinition, AgentRegistry
-from .execution import WorkflowExecutor
+from .execution import RunListener, WorkflowExecutor
 from .runtime import HTTP_STATUS_BY_CODE
 from .tools import ToolRegistry
 from .workflows import WorkflowDefinition, WorkflowRegistry
@@ -135,6 +138,45 @@ def _run_response(record: dict[str, Any]) -> dict[str, Any] | JSONResponse:
         return record
     return JSONResponse(status_code=HTTP_STATUS_BY_CODE.get(error["code"], 500),
                         content={**record, "detail": error["message"]})
+
+
+# A comment line keeps the connection active during long model calls, so proxies and
+# browsers don't treat it as idle.
+_KEEP_ALIVE_SECONDS = 15.0
+
+
+def _event_stream(start: Callable[[RunListener], Awaitable[dict[str, Any]]]) -> StreamingResponse:
+    """Run ``start`` and stream its progress events as server-sent events.
+
+    If the client disconnects, the run is cancelled so it stops using the model.
+    """
+    queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+
+    async def produce() -> None:
+        try:
+            await start(queue.put)
+        finally:
+            await queue.put(None)
+
+    async def frames() -> AsyncIterator[str]:
+        task = asyncio.create_task(produce())
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=_KEEP_ALIVE_SECONDS)
+                except TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+                if event is None:
+                    break
+                yield f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+            await task
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(frames(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 def create_app(agents: AgentRegistry, workflows: WorkflowRegistry,
@@ -294,13 +336,22 @@ def create_app(agents: AgentRegistry, workflows: WorkflowRegistry,
             raise HTTPException(status_code=404, detail=_message(exc)) from exc
         return _run_response(record)
 
-    @router.post("/runs", response_model=None)
-    async def run_definitions(request: RunRequest) -> dict[str, Any] | JSONResponse:
-        """Run a workflow from definitions in the request, without registering anything.
+    @router.post("/workflows/{workflow_name}/execute/stream", response_class=StreamingResponse)
+    async def execute_stream(workflow_name: str, request: ExecuteRequest) -> StreamingResponse:
+        """Run a registered workflow and stream its progress as server-sent events.
 
-        This lets the platform backend keep agents and workflows in its own database and
-        send them with each run.
+        Events: ``run_started``, ``step_started``, ``step_finished``, and ``run_finished``
+        (which carries the full run record, including for failed runs).
         """
+        try:
+            workflow = workflows.get(workflow_name)
+            executor.validate(workflow)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=_message(exc)) from exc
+        return _event_stream(
+            lambda listener: executor.run(workflow, request.prompt, listener=listener))
+
+    def _registry_for(request: RunRequest) -> AgentRegistry:
         registry = AgentRegistry()
         try:
             for item in request.agents:
@@ -308,8 +359,26 @@ def create_app(agents: AgentRegistry, workflows: WorkflowRegistry,
                 registry.register(_agent_from(item))
         except KeyError as exc:
             raise HTTPException(status_code=422, detail=_message(exc)) from exc
+        return registry
+
+    @router.post("/runs", response_model=None)
+    async def run_definitions(request: RunRequest) -> dict[str, Any] | JSONResponse:
+        """Run a workflow from definitions in the request, without registering anything.
+
+        This lets the platform backend keep agents and workflows in its own database and
+        send them with each run.
+        """
+        registry = _registry_for(request)
         record = await executor.run(_workflow_from(request.workflow), request.prompt, registry)
         return _run_response(record)
+
+    @router.post("/runs/stream", response_class=StreamingResponse)
+    async def run_definitions_stream(request: RunRequest) -> StreamingResponse:
+        """Like ``POST /runs``, but streams progress as server-sent events."""
+        registry = _registry_for(request)
+        workflow = _workflow_from(request.workflow)
+        return _event_stream(
+            lambda listener: executor.run(workflow, request.prompt, registry, listener=listener))
 
     app.include_router(router)
     app.mount("/console", _ConsoleFiles(directory=CONSOLE_DIR, html=True), name="console")

@@ -322,19 +322,70 @@ async function api(path, { method = "GET", body } = {}) {
   }
   const data = await response.json().catch(() => null);
   if (response.status === 401) {
-    const token = await askForToken(state.token
-      ? "That token wasn't accepted. Check ENGINE_API_TOKEN on the server and try again."
-      : "This engine only accepts requests that include its access token.");
-    if (token) {
-      saveToken(token);
-      return api(path, { method, body });
-    }
+    if (await requestToken()) return api(path, { method, body });
     throw new ApiError("This engine needs its access token. Choose Try again to enter it.", 401, data);
   }
   if (!response.ok) {
     throw new ApiError(formatDetail(data?.detail) || `Request failed (${response.status}).`, response.status, data);
   }
   return data;
+}
+
+async function requestToken() {
+  const token = await askForToken(state.token
+    ? "That token wasn't accepted. Check ENGINE_API_TOKEN on the server and try again."
+    : "This engine only accepts requests that include its access token.");
+  if (token) saveToken(token);
+  return Boolean(token);
+}
+
+// Start a run on a streaming route and pass each progress event to onEvent as it arrives.
+// Resolves with the final run record from the run_finished event.
+async function streamRun(path, body, onEvent) {
+  const headers = { "Content-Type": "application/json", Accept: "text/event-stream" };
+  if (state.token) headers.Authorization = `Bearer ${state.token}`;
+  let response;
+  try {
+    response = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
+  } catch {
+    throw new ApiError("Can't reach the engine. Check that the server is running.", 0);
+  }
+  if (response.status === 401) {
+    if (await requestToken()) return streamRun(path, body, onEvent);
+    throw new ApiError("This engine needs its access token. Choose Try again to enter it.", 401);
+  }
+  if (!response.ok || !response.body) {
+    const data = await response.json().catch(() => null);
+    throw new ApiError(formatDetail(data?.detail) || `Request failed (${response.status}).`, response.status, data);
+  }
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  let record = null;
+  for (;;) {
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch {
+      throw new ApiError("The connection to the engine dropped before the run finished.", 0);
+    }
+    if (chunk.done) break;
+    buffer += chunk.value.replace(/\r\n/g, "\n");
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const frame = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const data = frame.split("\n").filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart()).join("\n");
+      if (data) {
+        const event = JSON.parse(data);
+        if (event.type === "run_finished") record = event.run;
+        else onEvent(event);
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+  }
+  if (!record) throw new ApiError("The connection to the engine closed before the run finished.", 0);
+  return record;
 }
 
 // ---------------------------------------------------------------- Workflow graph
@@ -374,7 +425,12 @@ function layoutGraph(workflow) {
   return { nodes, depth, reachable };
 }
 
-function renderGraph(workflow, { visited = [], taken = [], pending = null } = {}) {
+// `dot` is the agent where the blue run-position dot sits (the starting agent by default).
+// When `dotFrom` is given and a handoff arrow joins it to `dot`, the dot slides along it.
+function renderGraph(workflow, {
+  visited = [], taken = [], pending = null, working = null,
+  dot = workflow.entry_agent, dotFrom = null,
+} = {}) {
   const layout = layoutGraph(workflow);
   if (!layout.nodes.length) {
     return el("p", { class: "graph-empty", text: "Choose a starting agent to see the workflow." });
@@ -472,40 +528,105 @@ function renderGraph(workflow, { visited = [], taken = [], pending = null } = {}
     return takenKeys.has(key) ? "active" : "base";
   };
   const rank = { base: 0, active: 1, pending: 2 };
+  const edgeElements = new Map();
   const edgeNodes = edges
     .map((edge) => ({ edge, variant: edgeVariant(edge) }))
     .sort((a, b) => rank[a.variant] - rank[b.variant])
-    .map(({ edge, variant }) => svgEl("path", {
-      d: edgePath(edge),
-      class: `edge ${variant === "base" ? "" : variant}`.trim(),
-      "marker-end": `url(#${id}-${variant})`,
-    }, svgEl("title", {}, `${edge.source} can hand off to ${edge.target}`)));
+    .map(({ edge, variant }) => {
+      const path = svgEl("path", {
+        d: edgePath(edge),
+        class: `edge ${variant === "base" ? "" : variant}`.trim(),
+        "marker-end": `url(#${id}-${variant})`,
+      }, svgEl("title", {}, `${edge.source} can hand off to ${edge.target}`));
+      edgeElements.set(`${edge.source}>${edge.target}`, path);
+      return path;
+    });
 
   const nodeShapes = layout.nodes.map((node) => {
     const { x, y } = position.get(node);
     const isEntry = node === workflow.entry_agent;
     const classes = ["node", isEntry && "entry", visitedNodes.has(node) && "visited",
-      !layout.reachable.has(node) && "unreachable"].filter(Boolean).join(" ");
+      node === working && "working", !layout.reachable.has(node) && "unreachable"]
+      .filter(Boolean).join(" ");
     const label = node.length > 13 ? `${node.slice(0, 12)}…` : node;
+    const tooltip = node === working ? `${node} (working now)`
+      : isEntry ? `${node} (starts the workflow)` : node;
     return svgEl("g", { class: classes },
-      svgEl("title", {}, isEntry ? `${node} (starts the workflow)` : node),
+      svgEl("title", {}, tooltip),
       svgEl("rect", { x, y, width: W, height: H, rx: 10 }),
-      isEntry ? svgEl("circle", { cx: x + 15, cy: y + H / 2, r: 4, class: "start-dot" }) : null,
       svgEl("text", {
-        x: x + W / 2 + (isEntry ? 6 : 0), y: y + H / 2,
+        x: x + W / 2 + (node === dot ? 6 : 0), y: y + H / 2,
         "text-anchor": "middle", "dominant-baseline": "central",
       }, label));
   });
 
+  // The run-position dot rests just inside the left edge of its agent's box.
+  const restingSpot = (node) => {
+    const spot = position.get(node);
+    return spot ? { x: spot.x + 15, y: spot.y + H / 2 } : null;
+  };
+  const rest = dot ? restingSpot(dot) : null;
+  const dotShape = rest ? svgEl("circle", {
+    class: `run-dot${working ? " live" : ""}`, cx: rest.x, cy: rest.y, r: 4.5,
+  }) : null;
+  const route = dotShape && dotFrom ? edgeElements.get(`${dotFrom}>${dot}`) : null;
+  if (route) requestAnimationFrame(() => moveDot(dotShape, route, restingSpot(dotFrom), rest));
+
   const summary = edges.length
     ? edges.map((edge) => `${edge.source} to ${edge.target}`).join(", ")
     : "no handoffs";
+  const where = dot && dot !== workflow.entry_agent ? ` The run is at ${dot}.` : "";
   return svgEl("svg", {
     class: "graph", viewBox: `0 0 ${width} ${height}`, width, height, role: "img",
-    "aria-label": `Workflow graph. Starts with ${workflow.entry_agent}. Handoffs: ${summary}.`,
+    "aria-label": `Workflow graph. Starts with ${workflow.entry_agent}. Handoffs: ${summary}.${where}`,
   },
   svgEl("defs", {}, marker("base"), marker("active"), marker("pending")),
-  edgeNodes, nodeShapes);
+  edgeNodes, nodeShapes, dotShape);
+}
+
+const lerp = (a, b, k) => ({ x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k });
+const easeInOut = (k) => (k < 0.5 ? 4 * k * k * k : 1 - (-2 * k + 2) ** 3 / 2);
+
+// Slide the run-position dot out of the previous agent, along the handoff arrow, and into
+// the agent that is working now. The whole trip is one smooth eased motion.
+function moveDot(dot, route, from, to) {
+  if (!dot.isConnected || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const length = route.getTotalLength();
+  const start = route.getPointAtLength(0);
+  const end = route.getPointAtLength(length);
+  const lead = Math.hypot(start.x - from.x, start.y - from.y);
+  const tail = Math.hypot(to.x - end.x, to.y - end.y);
+  const distance = lead + length + tail;
+  const pointAt = (travelled) => {
+    if (travelled <= lead) return lerp(from, start, lead ? travelled / lead : 1);
+    if (travelled <= lead + length) return route.getPointAtLength(travelled - lead);
+    return lerp(end, to, tail ? (travelled - lead - length) / tail : 1);
+  };
+  const duration = Math.min(1500, Math.max(700, distance * 2.4));
+  const began = performance.now();
+  const place = (point) => {
+    dot.setAttribute("cx", point.x);
+    dot.setAttribute("cy", point.y);
+  };
+  const frame = (now) => {
+    if (!dot.isConnected) return;
+    const progress = Math.min(1, (now - began) / duration);
+    place(pointAt(easeInOut(progress) * distance));
+    if (progress < 1) requestAnimationFrame(frame);
+  };
+  place(from);
+  requestAnimationFrame(frame);
+}
+
+// The path so far of a run in progress: finished steps, then the agent working now.
+function livePath(live) {
+  const sequence = [...live.steps.filter(Boolean).map((step) => step.agent), live.current]
+    .filter(Boolean);
+  const taken = [];
+  for (let index = 0; index < sequence.length - 1; index += 1) {
+    taken.push(`${sequence[index]}>${sequence[index + 1]}`);
+  }
+  return { visited: sequence, taken, working: live.current };
 }
 
 function runPath(response) {
@@ -551,15 +672,28 @@ function updateRunPreview() {
     legend.textContent = "";
   } else {
     description.textContent = `${workflow.description} · up to ${plural(workflow.max_handoffs, "handoff")} per run`;
-    // While a run is in progress its path isn't known yet, so don't show the previous run's.
+    // While a run is in progress, show its path so far rather than the previous run's.
+    const live = state.running && state.running.workflow === workflow.name ? state.running : null;
     const run = state.running ? null : activeRun();
-    const path = run?.response && run.workflow === workflow.name ? runPath(run.response) : {};
-    $("#run-graph").replaceChildren(renderGraph(workflow, path));
-    if (state.running && state.running.workflow === workflow.name) {
-      legend.textContent = "Running: this run's path is highlighted when it finishes";
+    const path = live ? livePath(live)
+      : run?.response && run.workflow === workflow.name ? runPath(run.response) : {};
+    // The dot marks where the run is: the starting agent, then each agent as it works,
+    // ending on the agent that finished the run. It slides along an arrow only when a live
+    // run hands off from the agent the dot was just showing.
+    const visitedSoFar = path.visited || [];
+    const dot = visitedSoFar.at(-1) || workflow.entry_agent;
+    const previous = live?.current ? visitedSoFar.at(-2) : null;
+    const dotFrom = previous && state.dot?.workflow === workflow.name && state.dot.agent === previous
+      ? previous : null;
+    $("#run-graph").replaceChildren(renderGraph(workflow, { ...path, dot, dotFrom }));
+    state.dot = { workflow: workflow.name, agent: dot };
+    if (live) {
+      legend.textContent = live.current
+        ? `Live: ${live.current} is working now`
+        : "Live: starting the run";
     } else {
       legend.textContent = path.visited
-        ? "Highlighted: the agents and handoffs this run used"
+        ? "Highlighted: the path this run took; the dot shows where it ended"
         : "Arrows are the handoffs each agent may make";
     }
   }
@@ -576,14 +710,33 @@ function renderRunResult() {
   const box = $("#run-result");
   clearInterval(state.timer);
   if (state.running) {
-    const elapsed = el("span", { class: "elapsed", text: "0.0s" });
-    box.replaceChildren(el("div", { class: "loading" },
-      el("span", { class: "spinner spinner-lg", "aria-hidden": "true" }),
-      el("h3", { text: `Running ${state.running.workflow}…` }),
-      el("p", { class: "muted", text: "Each agent makes its own model call, so this can take a little while." }),
-      elapsed));
+    const live = state.running;
+    const elapsed = el("span", { class: "elapsed", text: seconds(Date.now() - live.startedAt) });
+    const stepTimer = live.current
+      ? el("span", { text: seconds(Date.now() - live.currentStartedAt) }) : null;
+    const items = live.steps.filter(Boolean).map((step, index) => stepItem(step, index, Infinity, false));
+    if (live.current) items.push(workingItem(live.current, stepTimer));
+    box.replaceChildren(el("div", {},
+      el("div", { class: "live-head" },
+        el("span", { class: "spinner", "aria-hidden": "true" }),
+        el("strong", { text: `Running ${live.workflow}` }),
+        elapsed),
+      el("p", {
+        class: "muted live-note",
+        text: live.current
+          ? `${live.current} is working. Each agent makes its own model call, so a step can take a while.`
+          : "Starting the run…",
+      }),
+      items.length ? [
+        el("h3", { class: "section-label", text: "Steps so far" }),
+        el("ol", { class: "timeline" }, items),
+      ] : null));
     state.timer = setInterval(() => {
-      if (state.running) elapsed.textContent = seconds(Date.now() - state.running.startedAt);
+      if (!state.running) return;
+      elapsed.textContent = seconds(Date.now() - state.running.startedAt);
+      if (stepTimer && state.running.currentStartedAt) {
+        stepTimer.textContent = seconds(Date.now() - state.running.currentStartedAt);
+      }
     }, 200);
     return;
   }
@@ -714,6 +867,33 @@ function finishedRun(run) {
       el("button", { type: "button", class: "btn btn-ghost btn-sm", onclick: () => copy(response.run_id, "Run ID copied.") }, "Copy")));
 }
 
+function workingItem(agent, timer) {
+  return el("li", { class: "step step-working" },
+    el("span", { class: "step-marker" }, el("span", { class: "spinner", "aria-hidden": "true" })),
+    el("div", {},
+      el("div", { class: "step-head" },
+        el("span", { class: "agent-name", text: agent }),
+        el("span", { class: "step-action", text: "is working…" })),
+      el("div", { class: "step-meta" }, timer)));
+}
+
+function onRunEvent(event) {
+  const live = state.running;
+  if (!live) return;
+  if (event.type === "step_started") {
+    live.current = event.agent;
+    live.currentStartedAt = Date.now();
+  } else if (event.type === "step_finished") {
+    live.steps[event.index] = event.step;
+    live.current = null;
+    live.currentStartedAt = null;
+  } else {
+    return;
+  }
+  updateRunPreview();
+  renderRunResult();
+}
+
 function stepAction(step, pending) {
   if (step.status === "failed") return el("span", { class: "step-action", text: "failed" });
   if (step.status === "cancelled") return el("span", { class: "step-action", text: "was stopped when the run timed out" });
@@ -796,16 +976,18 @@ async function runWorkflow(event) {
     return;
   }
   const run = { id: newId(), workflow: workflow.name, prompt, startedAt: Date.now() };
-  state.running = { workflow: workflow.name, startedAt: run.startedAt };
+  state.running = {
+    workflow: workflow.name, startedAt: run.startedAt, steps: [], current: null, currentStartedAt: null,
+  };
   updateRunPreview();
   renderRunResult();
   if (window.matchMedia("(max-width: 920px)").matches) {
     $("#run-result").scrollIntoView({ behavior: "smooth", block: "start" });
   }
   try {
-    run.response = await api(`/workflows/${encodeURIComponent(workflow.name)}/execute`, {
-      method: "POST", body: { prompt },
-    });
+    // The streaming route reports each step as it happens; failed runs still end with a record.
+    run.response = await streamRun(`/workflows/${encodeURIComponent(workflow.name)}/execute/stream`,
+      { prompt }, onRunEvent);
   } catch (error) {
     if (error.data?.run_id) {
       // Failed runs still return their run record, with an error code and the steps that ran.
