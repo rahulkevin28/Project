@@ -1,6 +1,6 @@
 """Workflow metadata and registry."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -9,6 +9,11 @@ class WorkflowDefinition:
     description: str
     entry_agent: str
     max_handoffs: int = 8
+    edges: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+
+    def targets_for(self, agent_name: str) -> tuple[str, ...]:
+        """Return the configured destinations available to this agent."""
+        return tuple(target for source, target in self.edges if source == agent_name)
 
 
 class WorkflowRegistry:
@@ -28,3 +33,14 @@ class WorkflowRegistry:
 
     def list(self) -> list[WorkflowDefinition]:
         return sorted(self._workflows.values(), key=lambda item: item.name)
+
+    def remove(self, name: str) -> WorkflowDefinition:
+        try:
+            return self._workflows.pop(name)
+        except KeyError as exc:
+            raise KeyError(f"Unknown workflow {name!r}") from exc
+
+    def replace(self, workflow: WorkflowDefinition) -> None:
+        if workflow.name not in self._workflows:
+            raise KeyError(f"Unknown workflow {workflow.name!r}")
+        self._workflows[workflow.name] = workflow

@@ -15,6 +15,7 @@ dependencies = [
   "langchain-core>=0.3.25,<2",
   "langchain-openai>=0.2.10,<2",
   "langchain-anthropic>=0.3.3,<2",
+  "langchain-google-genai>=2.0.0,<5",
 ]
 
 [project.optional-dependencies]

@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Workflow Console</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234f46e5'/%3E%3Cpath d='M10 16h5m2-4 4-3m-4 7 4 3' stroke='white' stroke-width='2' stroke-linecap='round'/%3E%3Ccircle cx='9' cy='16' r='3' fill='white'/%3E%3Ccircle cx='23' cy='9' r='3' fill='white'/%3E%3Ccircle cx='23' cy='23' r='3' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <a class="brand" href="#run">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <rect width="32" height="32" rx="8" class="brand-bg"/>
+          <path d="M10 16h5m2-4 4-3m-4 7 4 3" class="brand-line"/>
+          <circle cx="9" cy="16" r="3" class="brand-dot"/>
+          <circle cx="23" cy="9" r="3" class="brand-dot"/>
+          <circle cx="23" cy="23" r="3" class="brand-dot"/>
+        </svg>
+        <span>AI Workflow Console</span>
+      </a>
+      <div class="topbar-meta">
+        <span id="model-pill" class="pill" title="Provider and model come from LLM_PROVIDER and LLM_MODEL in .env" hidden></span>
+        <span id="health-pill" class="pill" data-state="checking"><span class="dot"></span><span class="pill-label">Checking…</span></span>
+        <button type="button" class="btn btn-ghost btn-sm" id="forget-token" hidden>Forget token</button>
+        <a class="btn btn-ghost btn-sm" href="/docs" target="_blank" rel="noopener">API docs</a>
+      </div>
+    </div>
+    <nav class="shell tabs" role="tablist" aria-label="Console sections">
+      <button class="tab" role="tab" id="tab-run" aria-controls="view-run" data-view="run">Run</button>
+      <button class="tab" role="tab" id="tab-workflows" aria-controls="view-workflows" data-view="workflows">Workflows <span class="count" id="count-workflows"></span></button>
+      <button class="tab" role="tab" id="tab-agents" aria-controls="view-agents" data-view="agents">Agents <span class="count" id="count-agents"></span></button>
+    </nav>
+  </header>
+
+  <main class="shell">
+    <div id="load-error" class="banner banner-danger load-error" role="alert" hidden>
+      <span id="load-error-text"></span>
+      <button type="button" class="btn btn-sm" id="load-retry">Try again</button>
+    </div>
+
+    <section id="view-run" class="view" role="tabpanel" aria-labelledby="tab-run">
+      <div class="run-layout">
+        <form id="run-form" class="card run-form" novalidate>
+          <div class="field">
+            <label for="run-workflow">Workflow</label>
+            <select id="run-workflow"></select>
+            <p class="hint" id="run-workflow-desc"></p>
+          </div>
+          <div class="field">
+            <div class="label-row">
+              <label for="run-prompt">Prompt</label>
+              <span class="hint" id="prompt-count">0 / 20,000</span>
+            </div>
+            <textarea id="run-prompt" rows="7" maxlength="20000"
+              placeholder="Describe the task. Paste any policy or source text the agents should rely on."></textarea>
+            <div class="examples">
+              <span class="hint">Try an example:</span>
+              <button type="button" class="chip" data-example="returns">Return policy question</button>
+              <button type="button" class="chip" data-example="email">Support hours email</button>
+            </div>
+          </div>
+          <button type="submit" id="run-button" class="btn btn-primary btn-block btn-lg">Run workflow</button>
+          <p class="hint center shortcut"><kbd>⌘</kbd> or <kbd>Ctrl</kbd> + <kbd>Enter</kbd> runs the workflow</p>
+        </form>
+
+        <div class="run-output">
+          <div class="card graph-card">
+            <div class="card-title-row">
+              <h3 class="card-title">Workflow path</h3>
+              <span class="hint" id="graph-legend"></span>
+            </div>
+            <div id="run-graph" class="graph-box"></div>
+          </div>
+          <div id="run-result" class="card result-card" aria-live="polite"></div>
+          <div id="recent-runs" class="card" hidden>
+            <div class="card-title-row">
+              <h3 class="card-title">Recent runs</h3>
+              <span class="hint">Kept in this tab only</span>
+            </div>
+            <ul id="recent-list" class="recent-list"></ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="view-workflows" class="view" role="tabpanel" aria-labelledby="tab-workflows" hidden>
+      <div class="section-head">
+        <div>
+          <h2>Workflows</h2>
+          <p class="muted">A workflow starts with one agent. Each arrow is a handoff that agent is allowed to make.</p>
+        </div>
+        <button type="button" class="btn btn-primary" id="new-workflow">New workflow</button>
+      </div>
+      <p class="banner banner-info memory-note">Changes are kept in memory and reset when the server restarts.</p>
+      <div id="workflow-list" class="grid-cards grid-wide"></div>
+    </section>
+
+    <section id="view-agents" class="view" role="tabpanel" aria-labelledby="tab-agents" hidden>
+      <div class="section-head">
+        <div>
+          <h2>Agents</h2>
+          <p class="muted">Each agent has its own instructions and can only use the tools approved for it.</p>
+        </div>
+        <button type="button" class="btn btn-primary" id="new-agent">New agent</button>
+      </div>
+      <p class="banner banner-info memory-note">Changes are kept in memory and reset when the server restarts.</p>
+      <div id="agent-list" class="grid-cards"></div>
+    </section>
+  </main>
+
+  <dialog id="workflow-dialog" class="dialog" aria-labelledby="workflow-dialog-title">
+    <form id="workflow-form" novalidate>
+      <header class="dialog-head">
+        <h2 id="workflow-dialog-title">New workflow</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="wf-name">Name</label>
+          <input id="wf-name" autocomplete="off" spellcheck="false" maxlength="64" placeholder="e.g. support_reply">
+          <p class="hint" id="wf-name-hint">Lowercase letters, numbers, - or _. The name can't be changed later.</p>
+        </div>
+        <div class="field">
+          <label for="wf-description">Description</label>
+          <input id="wf-description" maxlength="500" placeholder="What this workflow is for">
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="wf-entry">Starts with</label>
+            <select id="wf-entry"></select>
+          </div>
+          <div class="field">
+            <label for="wf-max">Max handoffs</label>
+            <input id="wf-max" type="number" min="0" max="32" step="1" inputmode="numeric">
+          </div>
+        </div>
+        <fieldset class="field">
+          <legend>Allowed handoffs</legend>
+          <p class="hint">An agent can only pass work to the agents listed here.</p>
+          <div id="wf-edges" class="edge-list"></div>
+          <button type="button" class="btn btn-ghost btn-sm add-edge" id="wf-add-edge">+ Add handoff</button>
+        </fieldset>
+        <div class="field">
+          <span class="label">Preview</span>
+          <div id="wf-preview" class="graph-box"></div>
+          <ul id="wf-issues" class="issues" aria-live="polite"></ul>
+        </div>
+        <div class="banner banner-danger" id="wf-error" role="alert" hidden></div>
+      </div>
+      <footer class="dialog-foot">
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="wf-save">Save workflow</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="agent-dialog" class="dialog" aria-labelledby="agent-dialog-title">
+    <form id="agent-form" novalidate>
+      <header class="dialog-head">
+        <h2 id="agent-dialog-title">New agent</h2>
+        <button type="button" class="icon-btn" data-close aria-label="Close">×</button>
+      </header>
+      <div class="dialog-body">
+        <div class="field">
+          <label for="ag-name">Name</label>
+          <input id="ag-name" autocomplete="off" spellcheck="false" maxlength="64" placeholder="e.g. policy_checker">
+          <p class="hint" id="ag-name-hint">Lowercase letters, numbers, - or _. The name can't be changed later.</p>
+        </div>
+        <div class="field">
+          <label for="ag-description">Description</label>
+          <input id="ag-description" maxlength="500" placeholder="What this agent is responsible for">
+        </div>
+        <div class="field">
+          <div class="label-row">
+            <label for="ag-prompt">Instructions</label>
+            <span class="hint" id="ag-prompt-count">0 / 12,000</span>
+          </div>
+          <textarea id="ag-prompt" rows="8" maxlength="12000"
+            placeholder="Describe the agent's role, what it should produce, and when it should hand off."></textarea>
+          <details class="notes grounding">
+            <summary>Grounding rules are always added to these instructions</summary>
+            <pre id="ag-grounding" class="grounding-text"></pre>
+          </details>
+        </div>
+        <fieldset class="field">
+          <legend>Approved tools</legend>
+          <div id="ag-tools" class="tool-list"></div>
+        </fieldset>
+        <div class="field narrow">
+          <label for="ag-rounds">Max tool rounds</label>
+          <input id="ag-rounds" type="number" min="0" max="10" step="1" inputmode="numeric">
+          <p class="hint">How many times the agent may call tools before it must answer (0–10).</p>
+        </div>
+        <ul id="ag-issues" class="issues" aria-live="polite"></ul>
+        <div class="banner banner-danger" id="ag-error" role="alert" hidden></div>
+      </div>
+      <footer class="dialog-foot">
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="ag-save">Save agent</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="dialog dialog-sm" aria-labelledby="confirm-title">
+    <form method="dialog">
+      <div class="dialog-body">
+        <h2 id="confirm-title"></h2>
+        <p id="confirm-message" class="muted confirm-message"></p>
+      </div>
+      <footer class="dialog-foot">
+        <button value="cancel" class="btn btn-ghost">Cancel</button>
+        <button value="confirm" class="btn btn-danger" id="confirm-ok">Delete</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <dialog id="token-dialog" class="dialog dialog-sm" aria-labelledby="token-title">
+    <form method="dialog">
+      <div class="dialog-body">
+        <h2 id="token-title">Engine token required</h2>
+        <p id="token-message" class="muted confirm-message"></p>
+        <div class="field token-field">
+          <label for="token-input">Token</label>
+          <input id="token-input" type="password" autocomplete="off" spellcheck="false">
+          <p class="hint">This is the ENGINE_API_TOKEN value set on the server. It's kept in this browser tab only.</p>
+        </div>
+      </div>
+      <footer class="dialog-foot">
+        <button type="button" class="btn btn-ghost" data-close>Cancel</button>
+        <button value="save" class="btn btn-primary">Continue</button>
+      </footer>
+    </form>
+  </dialog>
+
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+</body>
+</html>
