@@ -1,10 +1,63 @@
 # AI Workflow Engine
 
-This standalone Python module provides the AI workflow and agent contribution for the project. The GitHub repository was empty when inspected, so this module does not assume a Java backend or React frontend layout.
+This repository contains the **AI Agent Management Platform**: a React and TypeScript frontend, a Java Spring Boot backend, and a Python FastAPI/LangGraph engine. The backend owns administrator authentication and persistent agent, workflow, and execution-history records in PostgreSQL. The Python engine runs the workflows and returns execution results to the backend.
+
+## Project architecture
+
+| Component | Location | Responsibility |
+|---|---|---|
+| Frontend | `frontend/` | React, TypeScript, and Vite dashboard. API requests use same-origin `/api` routes. |
+| Backend | `backend/` | Java 21 and Spring Boot REST API, administrator sessions, persistence, and calls to the engine. |
+| AI engine | `engine/` | Python 3.11+, FastAPI, and LangGraph execution, model providers, and the engine operations console. |
+| Database | PostgreSQL | Persistent agents, workflows, and workflow execution history, managed by backend migrations. |
+
+For local development, start PostgreSQL, then run the backend, engine, and frontend in separate terminals. The Vite development server proxies `/api` to `http://localhost:8080`, so the browser uses the Spring Boot API. The backend calls the engine at `http://localhost:8765` by default.
+
+### Start the Python engine
+
+From the repository root, create and activate the virtual environment, install the project, and configure `.env` from `.env.example`:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate       # Windows PowerShell: .venv\Scripts\Activate.ps1
+python -m pip install -e '.[dev]'
+cp .env.example .env            # Windows PowerShell: Copy-Item .env.example .env
+```
+
+Set `ENGINE_API_TOKEN` to a long random value and set the selected provider's API key in `.env`. The same `ENGINE_API_TOKEN` must be available to Spring Boot. The engine requires this token at startup. Then start the engine:
+
+```bash
+python -m engine.main
+```
+
+The API listens on `http://127.0.0.1:8765`; its development console is at `/`, and interactive API documentation is at `/docs`.
+
+### Start the Spring Boot backend
+
+Create the PostgreSQL database (default name `flowforge`) and set these variables in the backend process environment: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `ENGINE_API_TOKEN`. Spring Boot does not load `backend/.env` automatically. For local HTTP development set `SESSION_COOKIE_SECURE=false`; secure cookies are enabled by default and should be used with HTTPS.
+
+From `backend/`, run:
+
+```powershell
+.\mvnw.cmd spring-boot:run
+```
+
+The backend listens on `http://localhost:8080`. Flyway applies database migrations on startup; Hibernate validates the resulting schema.
+
+### Start the frontend
+
+From `frontend/`, install dependencies and start Vite:
+
+```bash
+npm install
+npm run dev
+```
+
+Open the local URL printed by Vite. Its `/api` proxy forwards requests to the Spring Boot backend on port 8080.
 
 ## Included
 
-- FastAPI endpoints for agent and workflow registration, updates, deletion, discovery, and execution.
+- FastAPI endpoints for agent and workflow registration, updates, deletion, discovery, and execution. The platform backend persists its own records and sends run definitions to the engine.
 - A LangGraph-backed planner, researcher, and writer example workflow with bounded agent-to-agent handoffs.
 - Registries for specialised agents, workflows, and explicitly approved tools.
 - A model/tool loop for LangChain tools.
@@ -128,7 +181,7 @@ Browsers' built-in `EventSource` only sends GET requests without custom headers,
 
 The Java service owns users, permissions, and durable agent and workflow records. This service runs workflows and reports what happened.
 
-**Service token.** Set `ENGINE_API_TOKEN` to a long random value on both services. The backend then sends `Authorization: Bearer <token>` on every call. `/health`, the console page, and `/docs` stay open; everything else returns 401 without the token. Without `ENGINE_API_TOKEN` the API is open, which is only suitable for your own machine.
+**Service token.** Set `ENGINE_API_TOKEN` to the same long random value in the engine and backend environments. The backend sends `Authorization: Bearer <token>` on each engine request. The engine requires this setting at startup. `/health`, the console page, and `/docs` stay open; other engine API routes return 401 without a valid token.
 
 **Storage.** `POST /runs` runs a workflow from definitions in the request, so the backend can keep agents and workflows in PostgreSQL and send them with each run. Nothing is registered or stored by this service:
 
